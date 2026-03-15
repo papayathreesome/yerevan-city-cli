@@ -19,6 +19,12 @@ Read [AGENTS.md](../../../AGENTS.md) before doing the work if you need API/baske
 
 Read [references/feedback-loop.md](references/feedback-loop.md) when you need the exact propose -> revise -> apply interaction shape.
 
+Language behavior:
+
+- Respond in the user's current language unless they ask otherwise.
+- Do not switch the whole answer to Russian just because the catalog, history, or example queries contain Russian text.
+- It is fine to use exact store-facing product names, query strings, and payload fields in whatever language best matches the live Yerevan City data.
+
 ## Workflow
 
 1. Refresh local memory first.

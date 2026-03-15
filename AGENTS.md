@@ -20,6 +20,7 @@ If you are an agent entering this repo cold:
 3. Use `lookup concepts`, `lookup categories`, and `lookup items` to gather evidence.
 4. Treat the CLI as evidence + basket-mutation infrastructure, not as the planner.
 5. Propose explicit basket lines first, then call `basket add` or `basket apply` only after approval.
+6. Respond in the user's current language unless they ask otherwise. It is fine to use store-facing queries, exact product names, and JSON fields in whatever language best matches the live catalog.
 
 Read this file for product boundaries and implementation notes.
 Read `.codex/skills/yerevan-city-basket-agent/SKILL.md` or `.claude/skills/yerevan-city-basket-agent/SKILL.md` for the actual propose -> revise -> apply workflow.
@@ -118,6 +119,12 @@ Default interaction contract:
 5. agent revises or applies
 
 Do not auto-apply a loose-list proposal on the first pass unless the user explicitly asked for immediate execution.
+
+Language behavior:
+
+- Keep the surrounding explanation, proposal, and follow-up in the user's current language.
+- Do not switch the whole response to Russian just because the catalog examples or live product names are Russian.
+- Use exact store-language product names or search terms only where they help the lookup or basket payload stay correct.
 
 ## Project layout
 

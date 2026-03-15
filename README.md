@@ -45,6 +45,11 @@ Typical flow:
 4. agent proposes an explicit basket
 5. `basket add` or `basket apply` happens only after approval
 
+Agent-facing language note:
+
+- Write narrative responses in the user's current language unless they ask otherwise.
+- It is fine to use store-facing queries, product names, or payload fields in whatever language best matches the live Yerevan City catalog.
+
 ## Install
 
 ```bash

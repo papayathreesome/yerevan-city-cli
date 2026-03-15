@@ -20,6 +20,9 @@ The default is:
 4. revise after user feedback
 5. apply only after explicit approval
 
+Keep the narrative response in the user's current language unless they ask otherwise.
+Use exact store-language product names or query text only where needed for correct lookups or basket payloads.
+
 Do not skip straight to `basket apply` unless the user clearly asked for immediate execution.
 
 ## Suggested response shape
