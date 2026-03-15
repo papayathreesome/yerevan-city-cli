@@ -1,0 +1,22 @@
+{
+  "name": "yerevan-city-cli",
+  "version": "0.1.0",
+  "description": "Agent-oriented CLI for Yerevan City order history, lookup, and basket automation",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "yerevan-city": "./src/cli.js"
+  },
+  "scripts": {
+    "start": "node ./src/cli.js",
+    "login": "node ./src/cli.js login",
+    "orders": "node ./src/cli.js orders list"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.8.0",
+    "classic-level": "^3.0.0"
+  }
+}
