@@ -69,11 +69,19 @@ This is the important architectural decision as of 2026-03-15:
   - this is the preferred first sync command for fresh agent sessions
 - `lookup concepts <query>`
   - queries derived concept memory from the SQLite DB
+- `lookup tree`
+  - fetches or reuses the full live category tree
+  - caches the tree in local state for reuse across CLI invocations
+  - supports `--refresh` when the agent wants a forced refetch
 - `lookup categories <query>`
   - searches the live category tree and returns likely category IDs/paths
-- `lookup items <query>`
+  - uses the cached full-tree snapshot by default
+- `lookup items [query]`
   - queries live store products and augments them with DB/history context
   - also supports `--category-id N...` so the caller can browse or search inside specific categories
+  - supports `--browse` for exhaustive shelf fetches inside known categories
+  - returns category evidence such as `queryCategoryHints`, per-candidate `categoryHints`, `discoveredCategories`, and browse metadata for the shelves it inspected
+  - `queryCategoryHints` are intentionally weaker evidence than categories derived from actual item candidates; the agent should treat them as fallback leads, not the primary routing signal
   - applies `overrides` steering during ranking
   - for `prefer` overrides, planner can now inject the preferred SKU into the candidate set via targeted live search when the broad query does not return it directly
 - `basket show`
@@ -108,15 +116,19 @@ Important:
 - the skill owns ambiguous-line expansion
 - the skill owns final SKU choice
 - the skill owns the proposal/revision loop with the user
+- the skill owns the reorder-vs-discovery judgment
+- the skill owns multi-step discovery loops such as search -> inspect candidate categories -> browse shelves -> cross-check tree
 - the CLI only provides evidence and basket mutation
 
 Default interaction contract:
 
 1. user sends loose list
 2. agent runs `sync auto`, then normalizes and looks up candidates
-3. agent shows suggested basket
-4. user gives corrections or approval
-5. agent revises or applies
+3. agent treats most lines as restocks first, using history-backed live matches when they are available
+4. only when that path fails or the user explicitly wants options, the agent widens into category discovery and shelf browsing
+5. agent shows suggested basket or exhaustive options, depending on the request
+6. user gives corrections or approval
+7. agent revises or applies
 
 Do not auto-apply a loose-list proposal on the first pass unless the user explicitly asked for immediate execution.
 

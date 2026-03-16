@@ -27,6 +27,29 @@ function formatAmd(value) {
   return `${Number(value).toLocaleString('en-US', { maximumFractionDigits: 2 })} AMD`;
 }
 
+function formatAgeMs(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return 'n/a';
+  }
+
+  const totalSeconds = Math.max(0, Math.round(Number(value) / 1000));
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+
+  const totalMinutes = Math.round(totalSeconds / 60);
+  if (totalMinutes < 60) {
+    return `${totalMinutes}m`;
+  }
+
+  const totalHours = Math.round(totalMinutes / 60);
+  if (totalHours < 48) {
+    return `${totalHours}h`;
+  }
+
+  return `${Math.round(totalHours / 24)}d`;
+}
+
 function formatStock(candidate) {
   if (candidate.isWeighted) {
     return `${Number(candidate.availableWeight ?? 0).toLocaleString('en-US')} g`;
@@ -48,6 +71,7 @@ export function renderSyncResultText(result) {
     `Detail failures: ${result.detailFailures}`,
     `Known items: ${result.itemStatsCount}`,
     `Known concepts: ${result.conceptCount}`,
+    `Address context: ${result.addressContext?.addressId ?? 'n/a'} (${result.addressContext?.lat ?? 'n/a'}, ${result.addressContext?.lng ?? 'n/a'})`,
   ].join('\n');
 }
 
@@ -70,13 +94,46 @@ export function renderCategoryLookupText(result) {
     return `No category matches for "${result.query}".\n`;
   }
 
-  return `${result.matches.map((category, index) => [
+  const header = result.treeCache
+    ? [
+      `Category tree: ${result.treeCache.source}`,
+      `Tree generated: ${formatDate(result.treeCache.generatedAt)}`,
+      `Tree age: ${formatAgeMs(result.treeCache.ageMs)}`,
+      '',
+    ]
+    : [];
+
+  return `${header.concat(result.matches.map((category, index) => [
     `${index + 1}. ${category.name} (#${category.id})`,
     `   Path: ${category.path}`,
     `   Score: ${category.score.toFixed(1)} | Confidence: ${category.confidence.toFixed(2)}`,
     `   Parent: ${category.parentId ?? 'root'} | Children: ${category.childrenCount}`,
     `   Adult: ${category.isAdult ? 'yes' : 'no'}`,
-  ].join('\n')).join('\n\n')}\n`;
+  ].join('\n'))).join('\n\n')}\n`;
+}
+
+export function renderCategoryTreeText(result) {
+  const header = [
+    `Category tree: ${result.cache?.source ?? 'n/a'}`,
+    `Generated: ${formatDate(result.generatedAt)}`,
+    `Age: ${formatAgeMs(result.cache?.ageMs)}`,
+    `Categories: ${Number(result.categories?.length ?? 0).toLocaleString('en-US')}`,
+    '',
+  ];
+
+  const body = [...(result.categories ?? [])]
+    .sort((left, right) =>
+      (left.topParentId - right.topParentId)
+      || String(left.path ?? '').localeCompare(String(right.path ?? ''), 'ru'))
+    .map((category) => {
+      const indent = '  '.repeat(Math.max(0, category.depth ?? 0));
+      return [
+        `${indent}- ${category.name} (#${category.id})`,
+        category.path ? `${indent}  path: ${category.path}` : null,
+      ].filter(Boolean).join('\n');
+    });
+
+  return `${header.concat(body).join('\n')}\n`;
 }
 
 export function renderItemLookupText(result) {
@@ -88,17 +145,44 @@ export function renderItemLookupText(result) {
     descriptorParts.push(`category filters [${result.categoryIds.join(', ')}]`);
   }
   const descriptor = descriptorParts.length ? ` for ${descriptorParts.join(' + ')}` : '';
+  const resolvedCategories = result.resolvedCategories ?? [];
+  const discoveredCategories = result.discoveredCategories ?? [];
+  const queryCategoryHints = result.queryCategoryHints ?? [];
 
   if (!result.candidates.length) {
-    return `No live item matches${descriptor}.\n`;
+    const lines = [`No live item matches${descriptor}.`];
+    if (queryCategoryHints.length) {
+      lines.push('');
+      lines.push(`Query category hints: ${queryCategoryHints.map((category) => `${category.name ?? 'n/a'} (#${category.id})`).join(' | ')}`);
+    }
+    return `${lines.join('\n')}\n`;
   }
 
   const headerLines = [];
+  headerLines.push(`Mode: ${result.mode ?? 'search'}`);
   if (result.query) {
     headerLines.push(`Query: ${result.query}`);
   }
-  if (result.categoryIds?.length) {
+  if (resolvedCategories.length) {
+    headerLines.push(`Category filters: ${resolvedCategories.map((category) =>
+      category.path ? `${category.path} (#${category.id})` : `#${category.id}`).join(' | ')}`);
+  } else if (result.categoryIds?.length) {
     headerLines.push(`Category filters: ${result.categoryIds.join(', ')}`);
+  }
+  if (result.treeCache) {
+    headerLines.push(`Category tree: ${result.treeCache.source}, generated ${formatDate(result.treeCache.generatedAt)}, age ${formatAgeMs(result.treeCache.ageMs)}`);
+  }
+  if (result.categoryBrowse?.length) {
+    headerLines.push(`Shelf browse: ${result.categoryBrowse.map((entry) => {
+      const label = entry.category?.path ?? entry.category?.name ?? `#${entry.categoryId}`;
+      return `${label} [pages ${entry.fetchedPages}/${entry.pageCount}${entry.truncated ? ', truncated' : ''}]`;
+    }).join(' | ')}`);
+  }
+  if (queryCategoryHints.length) {
+    headerLines.push(`Query category hints: ${queryCategoryHints.map((category) => `${category.name ?? 'n/a'} (#${category.id})`).join(' | ')}`);
+  }
+  if (discoveredCategories.length) {
+    headerLines.push(`Discovered categories: ${discoveredCategories.map((category) => `${category.name ?? 'n/a'} (#${category.id})`).join(' | ')}`);
   }
   const header = headerLines.length ? `${headerLines.join('\n')}\n\n` : '';
 
@@ -107,6 +191,9 @@ export function renderItemLookupText(result) {
     `   Score: ${candidate.score.toFixed(1)} | Confidence: ${candidate.confidence.toFixed(2)}`,
     `   Stock: ${formatStock(candidate)} | Price: ${formatAmd(candidate.price)}`,
     `   Category: ${candidate.categoryName ?? 'n/a'}`,
+    candidate.categoryHints?.length
+      ? `   Category hints: ${candidate.categoryHints.map((category) => `${category.name ?? 'n/a'} (#${category.id})`).join(' | ')}`
+      : '   Category hints: none',
     candidate.itemStats
       ? `   History: ${candidate.itemStats.totalOrders} orders, typical ${candidate.isWeighted ? `${candidate.itemStats.typicalWeightGrams ?? 'n/a'} g` : candidate.itemStats.typicalQuantity ?? 'n/a'}`
       : '   History: no prior order record',

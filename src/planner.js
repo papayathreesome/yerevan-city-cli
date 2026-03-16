@@ -1,5 +1,6 @@
 import { autoSync, resolveAddressContext } from './sync.js';
 import { buildItemKey } from './db.js';
+import { getCategoryById, loadCategoryTree, lookupCategoriesInTree } from './categories.js';
 import {
   expandSharedHeadClause,
   normalizeText,
@@ -268,12 +269,127 @@ async function searchLiveProducts(api, db, query, limit) {
   return products;
 }
 
-async function browseCategoryProducts(api, db, categoryId, query, limit) {
+function summarizeCategory(category, extra = {}) {
+  if (!category) {
+    return null;
+  }
+
+  return {
+    id: category.id,
+    name: category.name,
+    path: category.path,
+    parentId: category.parentId,
+    topParentId: category.topParentId,
+    depth: category.depth,
+    childrenCount: category.childrenCount,
+    itemCount: category.itemCount ?? null,
+    confidence: category.confidence ?? null,
+    score: category.score ?? null,
+    ...extra,
+  };
+}
+
+function mergeCategoryEvidence(categoryLists, limit = 12) {
+  const byId = new Map();
+
+  for (const category of categoryLists.flat().filter(Boolean)) {
+    const existing = byId.get(category.id);
+    const mergedSources = new Set([...(existing?.sources ?? []), ...(category.sources ?? []), ...(category.source ? [category.source] : [])]);
+
+    if (!existing || (category.score ?? 0) > (existing.score ?? 0)) {
+      byId.set(category.id, {
+        ...category,
+        sources: Array.from(mergedSources),
+      });
+      continue;
+    }
+
+    byId.set(category.id, {
+      ...existing,
+      confidence: Math.max(existing.confidence ?? 0, category.confidence ?? 0),
+      score: Math.max(existing.score ?? 0, category.score ?? 0),
+      sources: Array.from(mergedSources),
+    });
+  }
+
+  return Array.from(byId.values())
+    .sort((left, right) =>
+      (right.score ?? 0) - (left.score ?? 0)
+      || (right.confidence ?? 0) - (left.confidence ?? 0)
+      || (left.depth ?? 0) - (right.depth ?? 0)
+      || String(left.name ?? '').localeCompare(String(right.name ?? ''), 'ru'))
+    .slice(0, limit);
+}
+
+function inferCategoryHints(tree, query, { limit = 5, source } = {}) {
+  const normalizedQuery = normalizeText(query);
+  if (!normalizedQuery) {
+    return [];
+  }
+
+  return lookupCategoriesInTree({ tree, query, limit })
+    .map((category) => summarizeCategory(category, { source, sources: source ? [source] : [] }));
+}
+
+function resolveCategorySelections(tree, categoryIds) {
+  return categoryIds.map((categoryId) => {
+    const category = getCategoryById(tree, categoryId);
+    if (!category) {
+      return {
+        id: Number(categoryId),
+        name: null,
+        path: null,
+        parentId: null,
+        topParentId: null,
+        depth: null,
+        childrenCount: null,
+        itemCount: null,
+        confidence: null,
+        score: null,
+        source: 'selected_category',
+        sources: ['selected_category'],
+      };
+    }
+
+    return summarizeCategory(category, {
+      source: 'selected_category',
+      sources: ['selected_category'],
+    });
+  });
+}
+
+function buildCandidateCategoryHints(tree, product, limit = 3) {
+  const hints = [];
+
+  const categoryNameHints = inferCategoryHints(tree, product.categoryName, {
+    limit,
+    source: 'candidate_category_name',
+  });
+  hints.push(...categoryNameHints);
+
+  const rawCategoryId = Number(product.raw?.categoryId ?? 0);
+  if (rawCategoryId > 0) {
+    const byId = getCategoryById(tree, rawCategoryId);
+    if (byId) {
+      hints.push(summarizeCategory(byId, {
+        source: 'candidate_category_id',
+        sources: ['candidate_category_id'],
+      }));
+    }
+  }
+
+  return mergeCategoryEvidence([hints], limit);
+}
+
+async function browseCategoryProducts(api, db, categoryId, query, limit, options = {}) {
+  const normalizedQuery = normalizeText(query);
+  const exhaustive = Boolean(options.exhaustive || !normalizedQuery);
   const productsById = new Map();
-  const pageSize = query ? Math.max(limit * 10, 60) : Math.max(limit * 5, 30);
-  const maxPages = query ? 5 : 1;
+  const pageSize = exhaustive ? Math.max(limit * 5, 60) : Math.max(limit * 10, 60);
+  const maxPages = exhaustive ? 25 : 5;
   let currentPage = 1;
   let pageCount = 1;
+  let fetchedPages = 0;
 
   do {
     const response = await api.getProductsByLastCategory({
@@ -286,15 +402,18 @@ async function browseCategoryProducts(api, db, categoryId, query, limit) {
       countries: [],
       categories: [],
       brands: [],
-      search: query || null,
+      search: exhaustive ? null : query || null,
       isDiscounted: false,
       sortBy: 3,
     });
+    fetchedPages += 1;
 
     const products = (response?.data?.list ?? []).map(normalizeLiveProduct);
     db.saveCatalogProducts(
       products.map((product) => product.raw),
-      query ? `${query} [category:${categoryId}]` : `category:${categoryId}`,
+      exhaustive
+        ? (normalizedQuery ? `${query} [browse:${categoryId}]` : `browse:${categoryId}`)
+        : `${query} [category:${categoryId}]`,
     );
 
     for (const product of products) {
@@ -302,35 +421,49 @@ async function browseCategoryProducts(api, db, categoryId, query, limit) {
     }
 
     pageCount = Math.max(1, Number(response?.data?.pageCount ?? 1));
-    if (!query) {
-      break;
-    }
+    if (!exhaustive) {
+      const locallyMatchedCount = Array.from(productsById.values()).filter((product) =>
+        tokenOverlapScore(query, [product.name, product.nameRu, product.nameEn, product.categoryName].filter(Boolean).join(' ')) > 0
+      ).length;
 
-    const locallyMatchedCount = Array.from(productsById.values()).filter((product) =>
-      tokenOverlapScore(query, [product.name, product.nameRu, product.nameEn, product.categoryName].filter(Boolean).join(' ')) > 0
-    ).length;
-
-    if (locallyMatchedCount >= limit * 3) {
-      break;
+      if (locallyMatchedCount >= limit * 3) {
+        break;
+      }
     }
 
     currentPage += 1;
   } while (currentPage <= pageCount && currentPage <= maxPages);
 
-  return Array.from(productsById.values());
+  return {
+    products: Array.from(productsById.values()),
+    meta: {
+      categoryId: Number(categoryId),
+      exhaustive,
+      query: query || '',
+      remoteSearchApplied: !exhaustive && Boolean(normalizedQuery),
+      fetchedPages,
+      pageCount,
+      truncated: fetchedPages < pageCount,
+    },
+  };
 }
 
-async function searchProductsInCategories(api, db, query, limit, categoryIds) {
+async function searchProductsInCategories(api, db, query, limit, categoryIds, options = {}) {
   const productsById = new Map();
+  const categoryBrowse = [];
 
   for (const categoryId of categoryIds) {
-    const products = await browseCategoryProducts(api, db, categoryId, query, limit);
-    for (const product of products) {
+    const result = await browseCategoryProducts(api, db, categoryId, query, limit, options);
+    categoryBrowse.push(result.meta);
+    for (const product of result.products) {
       productsById.set(product.productId, product);
     }
   }
 
-  return Array.from(productsById.values());
+  return {
+    products: Array.from(productsById.values()),
+    categoryBrowse,
+  };
 }
 
 function resolveOverrideTargetProductId(db, override) {
@@ -363,13 +496,23 @@ function deriveOverrideSearchTerms(db, override, targetProductId, overrideItemSt
   ].filter(Boolean));
 }
 
-async function searchLiveProductsWithOverrides(api, db, query, limit, overrides, categoryIds = []) {
+async function searchLiveProductsWithOverrides(api, db, query, limit, overrides, categoryIds = [], options = {}) {
   const productsById = new Map();
-  const baseProducts = categoryIds.length
-    ? await searchProductsInCategories(api, db, query, limit, categoryIds)
-    : await searchLiveProducts(api, db, query, limit);
+  const exhaustiveCategoryBrowse = Boolean(categoryIds.length && (options.browse || !normalizeText(query)));
+  const baseResult = categoryIds.length
+    ? await searchProductsInCategories(api, db, query, limit, categoryIds, { exhaustive: exhaustiveCategoryBrowse })
+    : { products: await searchLiveProducts(api, db, query, limit), categoryBrowse: [] };
+  const baseProducts = baseResult.products;
   for (const product of baseProducts) {
     productsById.set(product.productId, product);
+  }
+
+  if (exhaustiveCategoryBrowse) {
+    return {
+      products: Array.from(productsById.values()),
+      categoryBrowse: baseResult.categoryBrowse,
+      exhaustiveCategoryBrowse,
+    };
   }
 
   const preferredOverrides = overrides.filter((override) => override.mode === 'prefer');
@@ -388,9 +531,10 @@ async function searchLiveProductsWithOverrides(api, db, query, limit, overrides,
       .filter((term) => normalizeText(term) !== normalizeText(query));
 
     for (const term of searchTerms) {
-      const overrideProducts = categoryIds.length
+      const overrideResult = categoryIds.length
         ? await searchProductsInCategories(api, db, term, limit, categoryIds)
-        : await searchLiveProducts(api, db, term, limit);
+        : { products: await searchLiveProducts(api, db, term, limit) };
+      const overrideProducts = overrideResult.products;
       const matchedProduct = overrideProducts.find((product) => Number(product.productId) === targetProductId);
       if (!matchedProduct) {
         continue;
@@ -401,7 +545,11 @@ async function searchLiveProductsWithOverrides(api, db, query, limit, overrides,
     }
   }
 
-  return Array.from(productsById.values());
+  return {
+    products: Array.from(productsById.values()),
+    categoryBrowse: baseResult.categoryBrowse,
+    exhaustiveCategoryBrowse,
+  };
 }
 
 function deriveHistoricalFragments(db, cleanedLine) {
@@ -571,7 +719,15 @@ function buildSelectedItem(query, candidate, requestedAmount, notes) {
   };
 }
 
-export async function lookupItems({ api, db, query = '', limit = 10, categoryIds = [] } = {}) {
+export async function lookupItems({
+  api,
+  db,
+  query = '',
+  limit = 10,
+  categoryIds = [],
+  browse = false,
+  refreshCategories = false,
+} = {}) {
   if (!api || !db) {
     throw new Error('lookupItems requires api and db.');
   }
@@ -582,17 +738,64 @@ export async function lookupItems({ api, db, query = '', limit = 10, categoryIds
   }
 
   const overrides = normalizedQuery ? db.findOverridesForQuery(query) : [];
-  const liveProducts = await searchLiveProductsWithOverrides(api, db, query, limit, overrides, categoryIds);
+  const liveResult = await searchLiveProductsWithOverrides(api, db, query, limit, overrides, categoryIds, { browse });
+  const liveProducts = liveResult.products;
   const itemStatsMap = db.getItemStatsByProductIds(liveProducts.map((product) => product.productId));
   const conceptMatches = normalizedQuery ? db.searchConcepts(query, 5) : [];
+  const categoryTree = await loadCategoryTree(api, { db, refresh: refreshCategories });
+  const queryCategoryHints = normalizedQuery
+    ? inferCategoryHints(categoryTree, query, { limit: 6, source: 'query' })
+    : [];
+  const resolvedCategories = resolveCategorySelections(categoryTree, categoryIds);
   const candidates = liveProducts
-    .map((product) => buildCandidate(query, product, itemStatsMap, conceptMatches, overrides))
-    .sort((left, right) => right.score - left.score);
+    .map((product) => ({
+      ...buildCandidate(query, product, itemStatsMap, conceptMatches, overrides),
+      categoryHints: buildCandidateCategoryHints(categoryTree, product),
+    }))
+    .sort((left, right) =>
+      right.score - left.score
+      || right.confidence - left.confidence
+      || String(left.name).localeCompare(String(right.name), 'ru'));
+  const discoveryCandidates = candidates
+    .filter((candidate) =>
+      (candidate.confidence ?? 0) >= 0.45
+      || (candidate.score ?? 0) >= 80)
+    .slice(0, Math.max(limit, 6));
+  const discoveredCategories = mergeCategoryEvidence([
+    resolvedCategories,
+    discoveryCandidates.flatMap((candidate) => candidate.categoryHints ?? []),
+  ]);
+  const categoryBrowse = (liveResult.categoryBrowse ?? []).map((entry) => {
+    const category = getCategoryById(categoryTree, entry.categoryId);
+    return {
+      ...entry,
+      category: category ? summarizeCategory(category) : summarizeCategory({
+        id: entry.categoryId,
+        name: null,
+        path: null,
+        parentId: null,
+        topParentId: null,
+        depth: null,
+        childrenCount: null,
+        itemCount: null,
+      }),
+    };
+  });
+  const mode = categoryIds.length
+    ? (liveResult.exhaustiveCategoryBrowse ? 'category_browse' : 'category_search')
+    : 'search';
 
   return {
     query,
     categoryIds,
+    browse,
+    mode,
     generatedAt: new Date().toISOString(),
+    treeCache: categoryTree.cache,
+    resolvedCategories,
+    queryCategoryHints,
+    discoveredCategories,
+    categoryBrowse,
     conceptMatches,
     overrides,
     candidates,

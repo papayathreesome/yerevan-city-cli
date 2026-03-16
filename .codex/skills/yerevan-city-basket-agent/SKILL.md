@@ -51,11 +51,27 @@ Language behavior:
 3. Use the tool for evidence, not decisions.
    - Query history with `node src/cli.js lookup concepts <query> --format json`
    - Query live candidates with `node src/cli.js lookup items <query> --format json`
+   - Default to the reorder path:
+     - use history first
+     - use the top known live SKU when it still clearly matches the request
+     - do not widen into category browsing unless the normal restock path fails or the user explicitly wants options
+   - Only enter the broader discovery loop when at least one of these is true:
+     - the user asked for `all options`, `all available`, or a full shelf
+     - the usual historical SKU is unavailable
+     - the request is genuinely new and history is weak or empty
+   - Discovery loop for broad or mixed-category requests:
+     1. start with `lookup items <query> --format json`
+     2. inspect returned `categoryHints` and `discoveredCategories`
+     3. browse each likely shelf with `node src/cli.js lookup items [query] --category-id N --browse --format json`
+     4. if the likely shelves still look incomplete, use `lookup categories <query>` and, rarely, `lookup tree` to search for missed categories
+   - Treat `queryCategoryHints` as a hint, not ground truth; categories discovered from actual item candidates are stronger evidence.
+   - In a mixed shelf browse, keep the full shelf in view but separate strict matches from same-shelf neighbors yourself.
    - For very broad staples like `молоко`, `творог`, or `минералка`, do not trust the raw generic live query by itself; use history first, then run a targeted live lookup with the strongest exact concept/name.
    - If the user states a stable future preference such as a preferred brand/flavor, persist it with `node src/cli.js overrides upsert ...` once the target SKU is clear and live.
    - Use `orders list/get` only when you need raw order detail context.
 4. Choose concrete products yourself.
    - Prefer historically frequent items when they are still live.
+   - Treat most requests as restocks first and discovery problems second.
    - If the top historical SKU is unavailable, choose the closest live substitute by brand, fat %, pack size, flavor, and category.
    - If the user gave an `or`, pick the best live option among the allowed choices.
    - If the user gave a broad category, choose the most defensible historically preferred live item.
@@ -128,6 +144,7 @@ Or an object:
 - Do not call `basket plan`; it is intentionally outside the tool boundary.
 - Do not mutate the basket on the first pass from a loose list unless the user explicitly asked for immediate apply.
 - Do not assume the highest-ranked live result is good enough. Check whether it actually matches the intended normalized query.
+- Do not assume the query-level category hint is the right shelf; prefer categories discovered from actual item candidates and explicit shelf browsing.
 - For flavor-specific lines, reject category-neighbors that miss the requested flavor.
 - Do not assume the user's remembered flavor+size combination exists live; verify exact SKU variants such as `лимон 1л` versus `1.5л`.
 - Do not assume a successful `lookup items` result means `basket apply` will revalidate the same SKU from a broad query.

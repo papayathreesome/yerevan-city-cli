@@ -11,7 +11,7 @@ import { YerevanCityDb } from './db.js';
 import { formatLoginResult, printJson } from './format.js';
 import { renderOrdersOutput } from './output.js';
 import { lookupConcepts, lookupItems } from './planner.js';
-import { lookupCategories } from './categories.js';
+import { loadCategoryTree, lookupCategories } from './categories.js';
 import { autoSync, syncOrders } from './sync.js';
 import { clearBasket, getBasket, writeBasket } from './basket.js';
 import {
@@ -19,6 +19,7 @@ import {
   renderBasketText,
   renderBasketWriteText,
   renderCategoryLookupText,
+  renderCategoryTreeText,
   renderConceptLookupText,
   renderItemLookupText,
   renderOverridesText,
@@ -52,8 +53,9 @@ Core Commands:
     Build or refresh the local history/concept database.
 
   yerevan-city lookup concepts <query>
+  yerevan-city lookup tree
   yerevan-city lookup categories <query>
-  yerevan-city lookup items <query>
+  yerevan-city lookup items [query]
     Query the local DB and live store state so the agent can decide what to buy.
 
   yerevan-city basket show
@@ -75,8 +77,9 @@ Usage:
   yerevan-city sync refresh [--page-size N] [--max-pages N] [--format text|json] [--output FILE]
   yerevan-city sync auto [--page-size N] [--max-pages N] [--format text|json] [--output FILE]
   yerevan-city lookup concepts <query> [--limit N] [--format text|json] [--output FILE]
-  yerevan-city lookup categories <query> [--limit N] [--format text|json] [--output FILE]
-  yerevan-city lookup items [query] [--category-id N...] [--limit N] [--format text|json] [--output FILE]
+  yerevan-city lookup tree [--refresh] [--format text|json] [--output FILE]
+  yerevan-city lookup categories <query> [--limit N] [--refresh] [--format text|json] [--output FILE]
+  yerevan-city lookup items [query] [--category-id N...] [--browse] [--refresh-categories] [--limit N] [--format text|json] [--output FILE]
   yerevan-city basket show [--format text|json] [--output FILE]
   yerevan-city basket clear [--format text|json] [--output FILE]
   yerevan-city basket add --product-id N [--quantity N | --weight-grams N] [--query TEXT] [--name TEXT] [--note TEXT] [--cut] [--grind] [--format text|json] [--output FILE]
@@ -168,13 +171,23 @@ const LOOKUP_CATEGORIES_HELP = `yerevan-city lookup categories <query>
 
 Purpose:
   Search the live Yerevan City category tree and return matching category IDs.
+  Uses a cached full-tree snapshot by default and refreshes it on demand.
 
 Usage:
-  yerevan-city lookup categories <query> [--limit N] [--format text|json] [--output FILE]
+  yerevan-city lookup categories <query> [--limit N] [--refresh] [--format text|json] [--output FILE]
 
 Examples:
   yerevan-city lookup categories полотенца
   yerevan-city lookup categories бумажные полотенца
+`;
+
+const LOOKUP_TREE_HELP = `yerevan-city lookup tree
+
+Purpose:
+  Fetch or reuse the full Yerevan City category tree for exhaustive discovery.
+
+Usage:
+  yerevan-city lookup tree [--refresh] [--format text|json] [--output FILE]
 `;
 
 const LOOKUP_ITEMS_HELP = `yerevan-city lookup items [query]
@@ -182,14 +195,16 @@ const LOOKUP_ITEMS_HELP = `yerevan-city lookup items [query]
 Purpose:
   Search live products in the current store and return history-aware candidates.
   Optionally constrain the lookup to one or more category IDs.
+  In category mode, \`--browse\` turns the call into an exhaustive shelf fetch.
 
 Usage:
   yerevan-city lookup items <query> [--limit N] [--format text|json] [--output FILE]
-  yerevan-city lookup items [query] --category-id N [--category-id N...] [--limit N] [--format text|json] [--output FILE]
+  yerevan-city lookup items [query] --category-id N [--category-id N...] [--browse] [--refresh-categories] [--limit N] [--format text|json] [--output FILE]
 
 Note:
   This command helps the agent decide. It does not choose or add products by itself.
   Use \`lookup categories\` first when the text search is noisy and you want to browse within a known category.
+  Use \`--browse\` when the agent wants the whole shelf, not only the search subset.
 `;
 
 const BASKET_HELP = `yerevan-city basket show|clear|add|apply
@@ -252,6 +267,7 @@ function showHelp(topic = 'root') {
     'orders get': ORDERS_GET_HELP,
     sync: SYNC_HELP,
     'lookup concepts': LOOKUP_CONCEPTS_HELP,
+    'lookup tree': LOOKUP_TREE_HELP,
     'lookup categories': LOOKUP_CATEGORIES_HELP,
     'lookup items': LOOKUP_ITEMS_HELP,
     basket: BASKET_HELP,
@@ -260,7 +276,7 @@ function showHelp(topic = 'root') {
 
   const message = helpByTopic[topic];
   if (!message) {
-    throw new Error('Unknown help topic. Try: help, help login, help orders list, help sync, help lookup categories, help lookup items, help basket, help overrides.');
+    throw new Error('Unknown help topic. Try: help, help login, help orders list, help sync, help lookup tree, help lookup categories, help lookup items, help basket, help overrides.');
   }
 
   console.log(message);
@@ -584,15 +600,31 @@ async function runLookupConceptsCommand(query, options) {
 }
 
 async function runLookupCategoriesCommand(query, options) {
-  await withRuntime(async ({ api }) => {
+  await withRuntime(async ({ api, db }) => {
     const result = await lookupCategories({
       api,
+      db,
       query,
       limit: options.limit,
+      refresh: options.refresh,
     });
 
     await writeCommandOutput(
       renderSimpleOutput(result, options.format, renderCategoryLookupText),
+      options.output,
+    );
+  });
+}
+
+async function runLookupTreeCommand(options) {
+  await withRuntime(async ({ api, db }) => {
+    const result = await loadCategoryTree(api, {
+      db,
+      refresh: options.refresh,
+    });
+
+    await writeCommandOutput(
+      renderSimpleOutput(result, options.format, renderCategoryTreeText),
       options.output,
     );
   });
@@ -606,6 +638,8 @@ async function runLookupItemsCommand(query, options) {
       query,
       limit: options.limit,
       categoryIds: options.categoryIds,
+      browse: options.browse,
+      refreshCategories: options.refreshCategories,
     });
 
     await writeCommandOutput(
@@ -878,6 +912,7 @@ async function main() {
       args: rest,
       options: {
         limit: { type: 'string', default: '10' },
+        refresh: { type: 'boolean', default: false },
         json: { type: 'boolean', default: false },
         format: { type: 'string' },
         output: { type: 'string' },
@@ -922,6 +957,32 @@ async function main() {
 
     await runLookupCategoriesCommand(query, {
       limit: parseIntegerOption(values.limit, 'limit'),
+      refresh: values.refresh,
+      format: resolveSimpleFormat(values),
+      output: values.output,
+    });
+    return;
+  }
+
+  if (command === 'lookup' && subcommand === 'tree') {
+    if (rest.includes('--help') || rest.includes('-h')) {
+      showHelp('lookup tree');
+      return;
+    }
+
+    const { values } = parseArgs({
+      args: rest,
+      options: {
+        refresh: { type: 'boolean', default: false },
+        json: { type: 'boolean', default: false },
+        format: { type: 'string' },
+        output: { type: 'string' },
+      },
+      allowPositionals: false,
+    });
+
+    await runLookupTreeCommand({
+      refresh: values.refresh,
       format: resolveSimpleFormat(values),
       output: values.output,
     });
@@ -939,6 +1000,8 @@ async function main() {
       options: {
         limit: { type: 'string', default: '10' },
         'category-id': { type: 'string', multiple: true },
+        browse: { type: 'boolean', default: false },
+        'refresh-categories': { type: 'boolean', default: false },
         json: { type: 'boolean', default: false },
         format: { type: 'string' },
         output: { type: 'string' },
@@ -955,6 +1018,8 @@ async function main() {
     await runLookupItemsCommand(query, {
       limit: parseIntegerOption(values.limit, 'limit'),
       categoryIds,
+      browse: values.browse,
+      refreshCategories: values['refresh-categories'],
       format: resolveSimpleFormat(values),
       output: values.output,
     });

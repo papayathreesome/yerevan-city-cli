@@ -25,6 +25,12 @@ Use exact store-language product names or query text only where needed for corre
 
 Do not skip straight to `basket apply` unless the user clearly asked for immediate execution.
 
+Default bias:
+
+- Most lines are restocks, not open-ended discovery.
+- Prefer the shortest history-backed path that yields a clearly matching live SKU.
+- Escalate into shelf discovery only when the historical path fails, the request is new, or the user explicitly asks for options.
+
 ## Suggested response shape
 
 When you have a first proposal, present:
@@ -82,6 +88,13 @@ If the user changes a quantity on a category-browsed good like paper towels:
 1. state whether you are counting units, rolls, or packs
 2. re-check cheap in-stock mixes if one SKU does not cover the whole request
 3. call out any excluded specialty formats such as dispenser/refill towels
+
+If the user asks for `all options`, `all available`, or points at a category:
+
+1. do not collapse the answer into one chosen SKU yet
+2. show the exhaustive shelf from `lookup items --category-id N --browse`
+3. keep strict matches and same-shelf neighbors visibly separate when the shelf is mixed
+4. ask the user which concrete SKU to use before applying
 
 ## Before apply
 
